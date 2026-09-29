@@ -2,14 +2,14 @@ CXX := g++
 CC  := gcc
 
 SRC_DIR  := src
-LN_DIR   := linenoise
+LN_DIR   := vendor/linenoise
 BUILD    := build
 TARGET   := $(BUILD)/debugg.bin
 
 TEST_DIR := test
 TEST_BIN := $(TEST_DIR)/build/main.bin
 
-ELFIN_DIR := libelfin-fbreg
+ELFIN_DIR := vendor/libelfin-fbreg
 DWARF_A   := $(ELFIN_DIR)/dwarf/libdwarf++.a
 ELF_A     := $(ELFIN_DIR)/elf/libelf++.a
 

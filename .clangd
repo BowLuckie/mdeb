@@ -1,7 +1,7 @@
 CompileFlags:
   Add:
-    - -Ilibelfin-fbreg
-    - -Ilibelfin-fbreg/elf
-    - -Ilibelfin-fbreg/dwarf
-    - -Ilinenoise
+    - -Ivendor/linenoise
+    - -Ivendor/libelfin-fbreg
+    - -Ivendor/libelfin-fbreg/elf
+    - -Ivendor/libelfin-fbreg/dwarf
     - -std=c++17
