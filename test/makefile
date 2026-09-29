@@ -1,39 +1,19 @@
-AS      = as
-LD      = ld
-AR      = ar
-ASFLAGS =
-LDFLAGS = -static -no-pie
+CXX      := g++
+CXXFLAGS := -Wall -Wextra -std=c++17 -g $(EXTRA_CXXFLAGS)
 
-BUILD   = build
-SRCS    = $(wildcard *.s)
-LIBSRCS = $(filter-out main.s,$(SRCS))
-LIBOBJS = $(patsubst %.s,$(BUILD)/%.o,$(LIBSRCS))
-MAINOBJ = $(BUILD)/main.o
-LIB     = $(BUILD)/libasm.a
-TARGET  = $(BUILD)/main.bin
+SRCS     := $(wildcard *.cpp)
+OBJS     := $(SRCS:.cpp=.o)
+TARGET   := test.bin
 
-# COMMAND RUNNERS
-.PHONY: all run debug clean
-run: $(TARGET)
-	./$(TARGET)
+.PHONY: all clean
 
-all: run
+all: $(TARGET)
 
-debug: $(TARGET)
-	gdb ./$(TARGET) -ex "layout asm" -ex "layout reg" -ex "starti"
+$(TARGET): $(OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LN_OBJ)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD)
-
-# BUILDING
-$(BUILD):
-	mkdir -p $(BUILD)
-
-$(BUILD)/%.o: %.s | $(BUILD)
-	@$(AS) $(ASFLAGS) -o $@ $< 
-
-$(LIB): $(LIBOBJS)
-	$(AR) rcs $@ $(LIBOBJS)
-
-$(TARGET): $(MAINOBJ) $(LIB)
-	$(LD) $(LDFLAGS) -o $@ $(MAINOBJ) $(LIB)
+	rm -f $(TARGET) $(OBJS)

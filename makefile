@@ -4,10 +4,10 @@ CC  := gcc
 SRC_DIR  := src
 LN_DIR   := vendor/linenoise
 BUILD    := build
-TARGET   := $(BUILD)/debugg.bin
+TARGET   := $(BUILD)/mdeb.bin
 
 TEST_DIR := test
-TEST_BIN := $(TEST_DIR)/build/main.bin
+TEST_BIN := $(TEST_DIR)/test.bin
 
 ELFIN_DIR := vendor/libelfin-fbreg
 DWARF_A   := $(ELFIN_DIR)/dwarf/libdwarf++.a
@@ -20,7 +20,6 @@ CXXFLAGS := -std=c++17 -Wall -Wextra -g -I$(LN_DIR) \
             -MMD -MP
 CFLAGS   := -Wall -g -MMD -MP
 LDFLAGS  :=
-# dwarf++ depends on elf++, so it must come first
 LDLIBS   := $(DWARF_A) $(ELF_A)
 
 SRCS := $(wildcard $(SRC_DIR)/*.cpp)
@@ -37,8 +36,8 @@ run: $(TARGET) test_bin
 
 rebuild: clean all
 
-test_bin:
-	$(MAKE) -C $(TEST_DIR) build/main.bin
+test_bin: $(BUILD)/linenoise.o
+	$(MAKE) -C $(TEST_DIR) test.bin LN_OBJ="../$(BUILD)/linenoise.o" EXTRA_CXXFLAGS="-I../$(LN_DIR)"
 
 $(TARGET): $(OBJS) $(DWARF_A) $(ELF_A)
 	$(CXX) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)

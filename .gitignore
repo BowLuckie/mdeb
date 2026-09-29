@@ -5,3 +5,4 @@
 **/*.so*
 **/*.d
 compile_commands.json
+**/fun.png
