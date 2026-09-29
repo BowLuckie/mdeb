@@ -1,0 +1,7 @@
+CompileFlags:
+  Add:
+    - -Ilibelfin-fbreg
+    - -Ilibelfin-fbreg/elf
+    - -Ilibelfin-fbreg/dwarf
+    - -Ilinenoise
+    - -std=c++17
