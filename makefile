@@ -37,7 +37,7 @@ run: $(TARGET) test_bin
 rebuild: clean all
 
 test_bin: $(BUILD)/linenoise.o
-	$(MAKE) -C $(TEST_DIR) test.bin LN_OBJ="../$(BUILD)/linenoise.o" EXTRA_CXXFLAGS="-I../$(LN_DIR)"
+	$(MAKE) -C $(TEST_DIR) 
 
 $(TARGET): $(OBJS) $(DWARF_A) $(ELF_A)
 	$(CXX) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
