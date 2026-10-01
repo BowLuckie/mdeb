@@ -1,14 +1,18 @@
 #include "linenoise.h"
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/personality.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -16,10 +20,77 @@
 #include <vector>
 
 using std::cerr;
-using std::cout;
 using std::intptr_t;
 using std::string;
 using std::vector;
+
+enum class reg : uint8_t {
+  rax,
+  rbx,
+  rcx,
+  rdx,
+  rdi,
+  rsi,
+  rbp,
+  rsp,
+  r8,
+  r9,
+  r10,
+  r11,
+  r12,
+  r13,
+  r14,
+  r15,
+  rip,
+  rflags,
+  cs,
+  orig_rax,
+  fs_base,
+  gs_base,
+  fs,
+  gs,
+  ss,
+  ds,
+  es
+};
+
+constexpr std::size_t n_registers = 27;
+
+struct reg_descriptor {
+  reg r;
+  int dwarf_r;
+  std::string name;
+};
+
+const std::array<reg_descriptor, n_registers> g_register_descriptors{{
+    {reg::r15, 15, "r15"},
+    {reg::r14, 14, "r14"},
+    {reg::r13, 13, "r13"},
+    {reg::r12, 12, "r12"},
+    {reg::rbp, 6, "rbp"},
+    {reg::rbx, 3, "rbx"},
+    {reg::r11, 11, "r11"},
+    {reg::r10, 10, "r10"},
+    {reg::r9, 9, "r9"},
+    {reg::r8, 8, "r8"},
+    {reg::rax, 0, "rax"},
+    {reg::rcx, 2, "rcx"},
+    {reg::rdx, 1, "rdx"},
+    {reg::rsi, 4, "rsi"},
+    {reg::rdi, 5, "rdi"},
+    {reg::orig_rax, -1, "orig_rax"},
+    {reg::rip, -1, "rip"},
+    {reg::cs, 51, "cs"},
+    {reg::rflags, 49, "eflags"},
+    {reg::rsp, 7, "rsp"},
+    {reg::ss, 52, "ss"},
+    {reg::fs_base, 58, "fs_base"},
+    {reg::gs_base, 59, "gs_base"},
+    {reg::ds, 53, "ds"},
+    {reg::es, 50, "es"},
+    {reg::fs, 54, "fs"},
+    {reg::gs, 55, "gs"},
+}};
 
 class breakpoint {
 public:
@@ -46,9 +117,13 @@ public:
   ~debugger();
 
   void run();
-  void handle_command(const string& line);
   void continue_execution();
+  void handle_command(const string& line);
+
   void set_break_addr(intptr_t addr);
+  void dump_registers();
+  uint64_t read_memory(intptr_t addr);
+  void write_memory(intptr_t addr, uint64_t val);
 
 private:
   string m_prog_name;
@@ -74,7 +149,7 @@ vector<string> split(const string& s, char delimiter) {
 
 int execute_debugee(char* prog) {
   if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) == -1) {
-    cout << "an error occured whilst activating ptrace" << errno;
+    cerr << "an error occured whilst activating ptrace" << errno;
     return EXIT_FAILURE;
   }
 
@@ -97,7 +172,7 @@ int main(int argc, char* argv[]) {
   }
 
   if (pid >= 1) {
-    cout << "Started debugging process " << pid << '\n';
+    cerr << "Started debugging process " << pid << '\n';
     debugger dbg(prog, pid);
     dbg.run();
   }
@@ -118,6 +193,66 @@ void debugger::run() {
   }
 }
 
+uint64_t get_register_value(pid_t pid, reg r) {
+  user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, pid, nullptr, &regs);
+
+  const reg_descriptor* it =
+      std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+                   [r](auto&& rd) { return rd.r == r; });
+
+  return *(reinterpret_cast<uint64_t*>(&regs) +
+           (it - begin(g_register_descriptors)));
+}
+
+void set_register_value(pid_t pid, reg r, uint64_t val) {
+  user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, pid, nullptr, &regs);
+
+  const reg_descriptor* it =
+      std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+                   [r](auto&& rd) { return rd.r == r; });
+
+  *(reinterpret_cast<uint64_t*>(&regs) + (it - begin(g_register_descriptors))) =
+      val;
+  ptrace(PTRACE_SETREGS, pid, nullptr, &regs);
+}
+
+uint64_t get_dwarf_reg(pid_t pid, unsigned regnum) {
+  const reg_descriptor* it =
+      std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+                   [regnum](auto&& rd) { return rd.dwarf_r == regnum; });
+
+  if (it == end(g_register_descriptors)) {
+    throw std::out_of_range{"unknown dwarf register"};
+  }
+
+  return get_register_value(pid, it->r);
+}
+
+string get_register_name(reg r) {
+  const reg_descriptor* it =
+      std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+                   [r](auto&& rd) { return rd.r == r; });
+
+  return it->name;
+}
+
+reg get_reg_from_name(string& name) {
+  const reg_descriptor* it =
+      std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+                   [name](auto&& rd) { return rd.name == name; });
+
+  return it->r;
+}
+
+void debugger::dump_registers() {
+  for (const reg_descriptor& rd : g_register_descriptors) {
+    std::cerr << rd.name << " 0x" << std::setfill('0') << std::setw(16)
+              << std::hex << get_register_value(m_pid, rd.r) << '\n';
+  }
+}
+
 void debugger::handle_command(const std::string& line) {
   auto args = split(line, ' ');
   const string& command = args[0];
@@ -127,6 +262,17 @@ void debugger::handle_command(const std::string& line) {
   } else if (is_prefix(command, "break")) {
     string addr{args[1], 2};
     set_break_addr(std::stol(addr, 0, 16));
+  } else if (is_prefix(command, "register")) {
+    if (is_prefix(args[1], "dump")) {
+      dump_registers();
+    } else if (is_prefix(args[1], "read")) {
+      std::cerr << get_register_value(m_pid, get_reg_from_name(args[2]))
+                << '\n';
+    } else if (is_prefix(args[1], "write")) {
+      std::string val{args[3], 2}; // 0xADDRESS
+      set_register_value(m_pid, get_reg_from_name(args[2]),
+                         std::stol(val, 0, 16));
+    }
   } else {
     std::cerr << "unkown command \"" << line << "\"\n";
   }
@@ -136,8 +282,15 @@ void debugger::continue_execution() {
   ptrace(PTRACE_CONT, m_pid, nullptr, nullptr);
 
   int wait_status;
-  int options = 0;
-  waitpid(m_pid, &wait_status, options);
+  waitpid(m_pid, &wait_status, 0);
+
+  if (WIFEXITED(wait_status)) {
+    std::cerr << "exited with " << WEXITSTATUS(wait_status) << '\n';
+  } else if (WIFSTOPPED(wait_status)) {
+    std::cerr << "stopped by signal " << WSTOPSIG(wait_status) << " at rip=0x"
+              << std::hex << get_register_value(m_pid, reg::rip) << std::dec
+              << '\n';
+  }
 }
 
 void breakpoint::enable() {
@@ -159,10 +312,23 @@ void breakpoint::disable() {
 }
 
 void debugger::set_break_addr(intptr_t addr) {
-  cout << "set breakpoint at address 0x" << addr << '\n';
+  cerr << "set breakpoint at address 0x" << std::hex << addr << '\n';
   breakpoint bp{m_pid, addr};
   bp.enable();
   m_breakpoints.emplace(addr, bp);
 }
 
-debugger::~debugger() { ptrace(PTRACE_KILL, m_pid, nullptr, nullptr); }
+debugger::~debugger() {
+  if (m_pid > 0) {
+    kill(m_pid, SIGKILL);
+    waitpid(m_pid, nullptr, 0);
+  }
+}
+
+uint64_t debugger::read_memory(intptr_t addr) {
+  return ptrace(PTRACE_PEEKDATA, m_pid, addr, nullptr);
+}
+
+void debugger::write_memory(intptr_t addr, uint64_t val) {
+  ptrace(PTRACE_POKEDATA, m_pid, addr, val);
+}

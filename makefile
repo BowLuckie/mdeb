@@ -7,7 +7,7 @@ BUILD    := build
 TARGET   := $(BUILD)/mdeb.bin
 
 TEST_DIR := test
-TEST_BIN := $(TEST_DIR)/test.bin
+TEST_BIN := $(TEST_DIR)/raw_asm/build/main.bin
 
 ELFIN_DIR := vendor/libelfin-fbreg
 DWARF_A   := $(ELFIN_DIR)/dwarf/libdwarf++.a
