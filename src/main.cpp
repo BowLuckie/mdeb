@@ -4,7 +4,9 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iomanip>
+#include <ios>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -23,6 +25,13 @@ using std::cerr;
 using std::intptr_t;
 using std::string;
 using std::vector;
+
+namespace color {
+constexpr const char* reset = "\033[0m";
+constexpr const char* red = "\033[31m";
+constexpr const char* yellow = "\033[33m";
+constexpr const char* aqua = "\033[36m";
+} // namespace color
 
 enum class reg : uint8_t {
   rax,
@@ -120,10 +129,17 @@ public:
   void continue_execution();
   void handle_command(const string& line);
 
-  void set_break_addr(intptr_t addr);
+  void wait_for_signal();
+
   void dump_registers();
   uint64_t read_memory(intptr_t addr);
   void write_memory(intptr_t addr, uint64_t val);
+
+  void set_break_addr(intptr_t addr);
+  void step_over_break();
+
+  uint64_t get_pc();
+  void set_pc(uint64_t addr);
 
 private:
   string m_prog_name;
@@ -168,7 +184,7 @@ int main(int argc, char* argv[]) {
   int pid = fork();
   if (pid == 0) {
     personality(ADDR_NO_RANDOMIZE);
-    execute_debugee(prog);
+    return execute_debugee(prog);
   }
 
   if (pid >= 1) {
@@ -219,9 +235,9 @@ void set_register_value(pid_t pid, reg r, uint64_t val) {
 }
 
 uint64_t get_dwarf_reg(pid_t pid, unsigned regnum) {
-  const reg_descriptor* it =
-      std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
-                   [regnum](auto&& rd) { return rd.dwarf_r == regnum; });
+  const reg_descriptor* it = std::find_if(
+      begin(g_register_descriptors), end(g_register_descriptors),
+      [regnum](auto&& rd) { return rd.dwarf_r == static_cast<int>(regnum); });
 
   if (it == end(g_register_descriptors)) {
     throw std::out_of_range{"unknown dwarf register"};
@@ -248,8 +264,9 @@ reg get_reg_from_name(string& name) {
 
 void debugger::dump_registers() {
   for (const reg_descriptor& rd : g_register_descriptors) {
-    std::cerr << rd.name << " 0x" << std::setfill('0') << std::setw(16)
-              << std::hex << get_register_value(m_pid, rd.r) << '\n';
+    std::cerr << color::aqua << rd.name << color::reset << " 0x"
+              << std::setfill('0') << std::setw(16) << std::hex
+              << get_register_value(m_pid, rd.r) << '\n';
   }
 }
 
@@ -269,28 +286,59 @@ void debugger::handle_command(const std::string& line) {
       std::cerr << get_register_value(m_pid, get_reg_from_name(args[2]))
                 << '\n';
     } else if (is_prefix(args[1], "write")) {
-      std::string val{args[3], 2}; // 0xADDRESS
+      string val{args[3], 2}; // 0xADDR
       set_register_value(m_pid, get_reg_from_name(args[2]),
                          std::stol(val, 0, 16));
     }
+  } else if (is_prefix(command, "memory")) {
+    const string& saddr{args[2], 2}; // 0xADDR
+    auto addr = std::stol(saddr, 0, 16);
+    const string& mem_command{args[1]};
+
+    if (is_prefix(mem_command, "read")) {
+      cerr << std::hex << read_memory(addr) << std::dec << '\n';
+    } else if (is_prefix(mem_command, "write")) {
+      string sval{args[3], 2};
+      auto val = std::stol(sval, 0, 16);
+      write_memory(addr, val);
+    }
+
   } else {
-    std::cerr << "unkown command \"" << line << "\"\n";
+    cerr << "unkown command \"" << line << "\"\n";
+  }
+}
+
+static std::string signal_name(int sig) {
+  if (const char* abbrev = sigabbrev_np(sig)) {
+    return std::string("SIG") + abbrev; // "SIGTRAP"
+  }
+  return "signal " +
+         std::to_string(sig); // realtime signals etc. have no abbrev
+}
+
+void debugger::wait_for_signal() {
+  int wait_status;
+  auto options = 0;
+  waitpid(m_pid, &wait_status, options);
+
+  if (WIFEXITED(wait_status)) {
+    std::cerr << color::aqua << "[mdeb] exited with "
+              << WEXITSTATUS(wait_status) << color::reset << '\n';
+  } else if (WIFSTOPPED(wait_status)) {
+    std::cerr << color::yellow << "[mdeb] stopped by "
+              << signal_name(WSTOPSIG(wait_status)) << " at rip=0x" << std::hex
+              << get_register_value(m_pid, reg::rip) << std::dec << color::reset
+              << '\n';
+  } else if (WIFSIGNALED(wait_status)) {
+    std::cerr << color::red << "[mdeb] killed by "
+              << signal_name(WTERMSIG(wait_status)) << color::reset << '\n';
   }
 }
 
 void debugger::continue_execution() {
+  step_over_break();
   ptrace(PTRACE_CONT, m_pid, nullptr, nullptr);
-
-  int wait_status;
-  waitpid(m_pid, &wait_status, 0);
-
-  if (WIFEXITED(wait_status)) {
-    std::cerr << "exited with " << WEXITSTATUS(wait_status) << '\n';
-  } else if (WIFSTOPPED(wait_status)) {
-    std::cerr << "stopped by signal " << WSTOPSIG(wait_status) << " at rip=0x"
-              << std::hex << get_register_value(m_pid, reg::rip) << std::dec
-              << '\n';
-  }
+  wait_for_signal();
 }
 
 void breakpoint::enable() {
@@ -306,7 +354,7 @@ void breakpoint::enable() {
 void breakpoint::disable() {
   auto injected = ptrace(PTRACE_PEEKDATA, m_pid, m_addr, nullptr);
   auto original = ((injected & ~0xff) | m_saved_data);
-  ptrace(PTRACE_POKEDATA, original);
+  ptrace(PTRACE_POKEDATA, m_pid, m_addr, original);
 
   m_enabled = false;
 }
@@ -316,6 +364,23 @@ void debugger::set_break_addr(intptr_t addr) {
   breakpoint bp{m_pid, addr};
   bp.enable();
   m_breakpoints.emplace(addr, bp);
+}
+
+void debugger::step_over_break() {
+  // rip is at one address past the possible break
+  uint64_t maybe_break_addr = get_pc() - 1;
+
+  auto it = m_breakpoints.find(maybe_break_addr);
+  if (it == m_breakpoints.end() || !it->second.is_enabled()) return;
+
+  auto& bp = it->second;
+  set_pc(maybe_break_addr);
+
+  bp.disable();
+  ptrace(PTRACE_SINGLESTEP, m_pid, nullptr, nullptr);
+  int status;
+  waitpid(m_pid, &status, 0);
+  if (WIFSTOPPED(status)) bp.enable();
 }
 
 debugger::~debugger() {
@@ -331,4 +396,10 @@ uint64_t debugger::read_memory(intptr_t addr) {
 
 void debugger::write_memory(intptr_t addr, uint64_t val) {
   ptrace(PTRACE_POKEDATA, m_pid, addr, val);
+}
+
+uint64_t debugger::get_pc() { return get_register_value(m_pid, reg::rip); }
+
+void debugger::set_pc(uint64_t val) {
+  set_register_value(m_pid, reg::rip, val);
 }
